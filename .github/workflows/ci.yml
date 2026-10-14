@@ -23,6 +23,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+          cache-dependency-path: requirements-dev.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python -X utf8 tools/check_project.py
       - run: python -B -X utf8 -m unittest discover -s tests -v
