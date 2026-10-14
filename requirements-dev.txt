@@ -1,0 +1,2 @@
+# Only project validation needs this dependency; runtime helpers use stdlib.
+PyYAML>=6.0,<7

@@ -1,0 +1,4 @@
+interface:
+  display_name: "鸣潮 WWMI Mod 修复"
+  short_description: "常规恢复鸣潮 Mod 兼容性，按明确要求改造模型、材质或变体功能"
+  default_prompt: "使用 $wwmi-mod-repair 检查我指定的鸣潮 Mod，默认恢复原有兼容性；按我的明确要求改造外观或功能，按需抓取并保留抓取，提醒我自行清理。"

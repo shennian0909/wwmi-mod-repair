@@ -1,0 +1,28 @@
+name: 修复流程或工具问题
+description: 报告技能规则、检查工具或实际兼容性问题
+title: '[问题] '
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本
+      description: 技能版本、WWMI/XXMI 和资源包；避免填写个人绝对路径。
+    validations:
+      required: true
+  - type: textarea
+    id: symptoms
+    attributes:
+      label: 异常与范围
+      description: 部位、场景、形态，及期望恢复的表现或明确的改造目标。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 已完成的检查与反馈
+      description: 区分文件检查、抓取确认与游戏画面验证，描述实际结果。
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 必要证据或报错
+      description: 提供已脱敏的相关配置/日志片段和作者发布页链接；原始抓取与资源文件保留在本地。
