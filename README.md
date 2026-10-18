@@ -3,7 +3,9 @@
 [![CI](https://github.com/shennian0909/wwmi-mod-repair/actions/workflows/ci.yml/badge.svg)](https://github.com/shennian0909/wwmi-mod-repair/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-面向具备本地文件读写能力的 AI 助手的鸣潮 WWMI Mod 修复与改造技能。根据作者资源、实际绘制与计算证据定位问题，按需要配置 FrameAnalysis，保存备份并记录游戏验证。
+为了自行适配UHD画质下使用MOD而创建的Skills。
+
+面向具备本地文件读写能力的 AI 助手的鸣潮 WWMI Mod 修复与改造技能。根据MOD作者资源、实际绘制与计算证据定位问题，按需要配置 FrameAnalysis，保存备份并记录游戏验证。
 
 技能保持一个入口 `$wwmi-mod-repair`，提供两种工作模式：
 
