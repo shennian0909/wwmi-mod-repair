@@ -56,6 +56,75 @@ def canonical(body):
     return HASH.sub(lambda m: m[1] + '<HASH>' + m[3] + m[4], body).replace('\r', '').strip()
 
 
+def assignments(body):
+    """Read assignment keys, including pre/post, without interpreting conditions."""
+    for line in body.splitlines():
+        quoted = False
+        for offset, character in enumerate(line):
+            if character == '"':
+                quoted = not quoted
+            elif character == ';' and not quoted:
+                line = line[:offset]
+                break
+        line = line.strip()
+        match = re.fullmatch(r'(?:(?:pre|post)\s+)?([^\s=]+)\s*=\s*(.*)', line, re.I)
+        if match:
+            yield match[1].lower(), match[2].strip()
+
+
+def validate_texture_recipe(section, sections):
+    """Check the selected rule's local call graph, not unrelated author rules.
+
+    This is a bounded staging check, not a complete INI interpreter. External
+    calls and runtime resource selection require an evidence-scoped manual patch.
+    """
+    visited, active, resources = set(), set(), set()
+    has_replacement = False
+
+    def visit(item):
+        nonlocal has_replacement
+        name = item[1].lower()
+        if name in active:
+            raise ValueError('Cyclic command-list calls require manual scope review.')
+        if name in visited:
+            return
+        active.add(name)
+        for key, value in assignments(item[2]):
+            if (key.startswith(('draw', 'dispatch')) or key in {'handling', 'ib',
+                    'match_first_index', 'match_index_count', 'match_first_vertex', 'match_vertex_count'}
+                    or re.fullmatch(r'(?:vb|so)\d+', key)):
+                raise ValueError(f'Geometry/component commands are outside this texture-only helper: {item[1]} / {key}')
+            if re.fullmatch(r'(?:ps|vs|cs|gs|hs|ds)-(?:t|cb|u)\d+|o(?:\d+|d)', key):
+                raise ValueError(f'Direct slot bindings require manual scope review: {item[1]} / {key}')
+            if key == 'checktextureoverride':
+                raise ValueError('Nested override dispatch requires manual scope review.')
+            if key == 'run':
+                called = sections.get(value.lower())
+                if '\\' in value or not value.lower().startswith('commandlist') or called is None:
+                    raise ValueError(f'Unresolved or external command call requires manual scope review: {value}')
+                visit(called)
+            elif key == 'this':
+                target = re.sub(r'^(?:copy|reference)\s+', '', value, flags=re.I)
+                target = re.sub(r'\s+unless_null$', '', target, flags=re.I).strip()
+                has_replacement = True
+                if target.lower() == 'null':
+                    continue
+                resource = sections.get(target.lower())
+                if '\\' in target or not target.lower().startswith('resource') or resource is None:
+                    raise ValueError(f'Unresolved or runtime this resource requires manual scope review: {value}')
+                filenames = [v for k, v in assignments(resource[2]) if k == 'filename']
+                if len(filenames) != 1 or not filenames[0].strip('"') or '$' in filenames[0]:
+                    raise ValueError(f'Dynamic resource requires manual scope review: {target}')
+                resources.add(resource[1])
+        active.remove(name)
+        visited.add(name)
+
+    visit(section)
+    if not has_replacement:
+        raise ValueError('No local this replacement found; review the rule manually.')
+    return {'recipe_sections': sorted(visited), 'resource_sections': sorted(resources)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--ini', type=Path, required=True)
@@ -90,8 +159,7 @@ def main():
         if section is None or not section[1].lower().startswith('textureoverride'):
             raise ValueError('Source must be an existing TextureOverride section.')
         body = section[2]
-        if re.search(r'^[ \t]*(?:match_first_index|match_index_count|drawindexed|handling|ib|vb\d+)[ \t]*=', body, re.M | re.I):
-            raise ValueError('Geometry/component overrides are outside this texture-only helper.')
+        scope_check = validate_texture_recipe(section, source_sections)
         matches = list(HASH.finditer(body))
         if len(matches) != 1:
             raise ValueError('Source needs exactly one eight-digit texture hash.')
@@ -117,7 +185,8 @@ def main():
                 text += newline
             status = 'added'
         changes.append({'source_section': section[1], 'old_hash': old_hash, 'new_hash': new_hash,
-                        'new_section': name, 'status': status, 'evidence': evidence})
+                        'new_section': name, 'status': status, 'evidence': evidence,
+                        'local_scope_check': scope_check})
     validate_conditionals(parse(text))
     patched = text.encode('latin1')
     if not patched.startswith(raw):
@@ -147,6 +216,7 @@ def main():
     report = {'source': str(source), 'source_sha256': digest(raw), 'patched_sha256': digest(patched),
               'aliases_added': sum(c['status'] == 'added' for c in changes), 'changes': changes,
               'original_bytes_preserved': True, 'missing_resources': [], 'file_validation_passed': True,
+              'validation_scope': 'append-only texture aliases and selected local references; not full INI execution',
               'installed': False, 'game_verified': False, 'evidence_relation_verified_by_helper': False}
     (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({'output': str(output), 'aliases_added': report['aliases_added'],
