@@ -1,12 +1,10 @@
-"""Install/update the skill; preserve replaced files beside their originals."""
+"""Install/update the skill; preserve replaced files in a separate backup tree."""
 import argparse
-from datetime import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
-import time
 
 from _project import ROOT, SKILL_NAME, linked, skill_files
 
@@ -27,20 +25,17 @@ def check_target(path):
 
 
 def backup(path, expected):
-    """Use actual local time; a name collision must never replace a backup."""
-    for _ in range(30):
-        stamp = datetime.now().strftime('%Y-%m-%d %H-%M-%S')
-        saved = path.with_name(f'{path.name} {stamp}.BAK')
-        try:
-            with saved.open('xb') as stream:
-                stream.write(expected)
-        except FileExistsError:
-            time.sleep(0.1)
-            continue
-        if hashlib.sha256(saved.read_bytes()).digest() != hashlib.sha256(expected).digest():
-            raise OSError(f'Backup verification failed: {saved}')
-        return saved
-    raise FileExistsError('Could not create a unique backup with the current local time.')
+    """Create the selected snapshot, or reuse an identical one without overwriting."""
+    check_target(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open('xb') as stream:
+            stream.write(expected)
+    except FileExistsError:
+        pass
+    if path.read_bytes() != expected:
+        raise OSError(f'Backup verification failed: {path}')
+    return path
 
 
 def install(source, destination, dry_run=False):
@@ -57,6 +52,9 @@ def install(source, destination, dry_run=False):
     destination = destination.resolve()
     if source.is_relative_to(destination) or destination.is_relative_to(source):
         raise ValueError('Source and destination must be separate, non-overlapping directories.')
+    backup_directory = destination.parent / f'.{destination.name}-backups'
+    if source.is_relative_to(backup_directory) or backup_directory.is_relative_to(source):
+        raise ValueError('Source and backup directories must not overlap.')
     entries = []
     for relative in skill_files(source):
         target = destination / relative
@@ -64,9 +62,16 @@ def install(source, destination, dry_run=False):
         incoming = (source / relative).read_bytes()
         previous = target.read_bytes() if target.exists() else None
         action = 'unchanged' if previous == incoming else 'update' if previous is not None else 'create'
-        entries.append((relative, target, incoming, previous, action))
+        saved = None
+        if action == 'update':
+            digest = hashlib.sha256(previous).hexdigest()
+            saved = backup_directory / digest / relative
+            check_target(saved)
+            if saved.exists() and saved.read_bytes() != previous:
+                raise OSError(f'Backup verification failed: {saved}')
+        entries.append((relative, target, incoming, previous, action, saved))
     result = []
-    for relative, target, incoming, previous, action in entries:
+    for relative, target, incoming, previous, action, saved in entries:
         record = {'file': relative.as_posix(), 'action': action}
         if action != 'unchanged' and not dry_run:
             check_target(target)
@@ -75,7 +80,7 @@ def install(source, destination, dry_run=False):
                 raise ValueError(f'Destination changed after inspection: {relative}')
             target.parent.mkdir(parents=True, exist_ok=True)
             if previous is not None:
-                record['backup'] = backup(target, previous).name
+                record['backup'] = str(backup(saved, previous))
             with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.wwmi-install-', delete=False) as stream:
                 temporary = Path(stream.name)
                 stream.write(incoming)
@@ -88,7 +93,8 @@ def install(source, destination, dry_run=False):
             if target.read_bytes() != incoming:
                 raise OSError(f'Installed bytes differ from the source: {relative}')
         result.append(record)
-    return {'destination': str(destination), 'dry_run': dry_run, 'files': result}
+    return {'destination': str(destination), 'backup_directory': str(backup_directory),
+            'dry_run': dry_run, 'files': result}
 
 
 def main():

@@ -1,5 +1,4 @@
 """Installation preservation and runtime-package integrity on synthetic files."""
-from datetime import datetime, timedelta
 import hashlib
 import io
 import json
@@ -7,7 +6,6 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest import mock
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
@@ -46,20 +44,27 @@ class ProjectToolsTests(unittest.TestCase):
         self.assertFalse(list(self.destination.rglob('*.BAK')))
         self.assertFalse((self.destination / 'scripts/__pycache__').exists())
 
-    def test_update_saves_exact_old_bytes_beside_original(self):
+    def test_update_saves_exact_old_bytes_outside_skill_directory(self):
         install(self.source, self.destination)
         original = self.destination / 'SKILL.md'
         old_bytes = original.read_bytes()
+        old_reference = (self.destination / 'references/example.md').read_bytes()
         (self.source / 'SKILL.md').write_bytes(old_bytes + b'Updated\n')
+        (self.source / 'references/example.md').write_bytes(b'Updated reference\n')
         (self.destination / 'local-notes.md').write_bytes(b'Keep local customization')
         result = install(self.source, self.destination)
-        saved = list(self.destination.glob('SKILL.md *.BAK'))
-        self.assertEqual(len(saved), 1)
-        self.assertRegex(saved[0].name, r'^SKILL\.md \d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.BAK$')
-        self.assertEqual(saved[0].read_bytes(), old_bytes)
+        saved = {r['file']: Path(r['backup']) for r in result['files'] if 'backup' in r}
+        self.assertEqual(set(saved), {'SKILL.md', 'references/example.md'})
+        self.assertEqual(saved['SKILL.md'].read_bytes(), old_bytes)
+        self.assertEqual(saved['references/example.md'].read_bytes(), old_reference)
+        for relative, path in saved.items():
+            self.assertFalse(path.is_relative_to(self.destination))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(path, Path(result['backup_directory']) / digest / relative)
+        self.assertFalse(list(self.destination.rglob('*.BAK')))
         self.assertEqual(original.read_bytes(), old_bytes + b'Updated\n')
         self.assertEqual((self.destination / 'local-notes.md').read_bytes(), b'Keep local customization')
-        self.assertEqual([r['action'] for r in result['files']].count('update'), 1)
+        self.assertEqual([r['action'] for r in result['files']].count('update'), 2)
 
     def test_identical_install_is_noop(self):
         install(self.source, self.destination)
@@ -69,23 +74,59 @@ class ProjectToolsTests(unittest.TestCase):
         self.assertTrue(all(r['action'] == 'unchanged' for r in result['files']))
         self.assertEqual(original.stat().st_mtime_ns, stamp)
         self.assertFalse(list(self.destination.rglob('*.BAK')))
+        self.assertFalse(Path(result['backup_directory']).exists())
 
     def test_backup_name_collision_preserves_existing_backup(self):
-        original = self.source / 'SKILL.md'
-        current = datetime.now()
-        occupied = original.with_name(original.name + ' ' + current.strftime('%Y-%m-%d %H-%M-%S') + '.BAK')
+        occupied = self.base / 'backups' / 'SKILL.md'
+        occupied.parent.mkdir()
         occupied.write_bytes(b'earlier backup')
-        with mock.patch('install_skill.datetime') as clock, mock.patch('install_skill.time.sleep'):
-            clock.now.side_effect = [current, current + timedelta(seconds=1)]
-            saved = backup(original, original.read_bytes())
-        self.assertNotEqual(saved, occupied)
+        with self.assertRaises(OSError):
+            backup(occupied, b'different bytes')
         self.assertEqual(occupied.read_bytes(), b'earlier backup')
-        self.assertEqual(saved.read_bytes(), original.read_bytes())
+        self.assertEqual(backup(occupied, b'earlier backup'), occupied)
+
+    def test_repeated_updates_preserve_each_previous_version(self):
+        install(self.source, self.destination)
+        first = (self.source / 'SKILL.md').read_bytes()
+        (self.source / 'SKILL.md').write_bytes(first + b'Second\n')
+        first_update = install(self.source, self.destination)
+        (self.source / 'SKILL.md').write_bytes(first + b'Third\n')
+        second_update = install(self.source, self.destination)
+        first_snapshot = Path(next(r['backup'] for r in first_update['files'] if r['file'] == 'SKILL.md'))
+        second_snapshot = Path(next(r['backup'] for r in second_update['files'] if r['file'] == 'SKILL.md'))
+        self.assertNotEqual(first_snapshot, second_snapshot)
+        self.assertEqual(first_snapshot.read_bytes(), first)
+        self.assertEqual(second_snapshot.read_bytes(), first + b'Second\n')
 
     def test_dry_run_does_not_create_destination(self):
         result = install(self.source, self.destination, dry_run=True)
         self.assertTrue(result['dry_run'])
         self.assertFalse(self.destination.exists())
+        self.assertFalse(Path(result['backup_directory']).exists())
+
+    def test_dry_run_update_does_not_write_or_create_backups(self):
+        install(self.source, self.destination)
+        original = (self.destination / 'SKILL.md').read_bytes()
+        (self.source / 'SKILL.md').write_bytes(original + b'Updated\n')
+        result = install(self.source, self.destination, dry_run=True)
+        self.assertEqual([r['action'] for r in result['files']].count('update'), 1)
+        self.assertEqual((self.destination / 'SKILL.md').read_bytes(), original)
+        self.assertFalse(Path(result['backup_directory']).exists())
+
+    def test_linked_backup_directory_is_rejected_before_update(self):
+        installed = install(self.source, self.destination)
+        original = (self.destination / 'SKILL.md').read_bytes()
+        (self.source / 'SKILL.md').write_bytes(original + b'Updated\n')
+        actual = self.base / 'redirected-backups'
+        actual.mkdir()
+        try:
+            Path(installed['backup_directory']).symlink_to(actual, target_is_directory=True)
+        except OSError:
+            self.skipTest('Creating symbolic links is unavailable on this host.')
+        with self.assertRaises(ValueError):
+            install(self.source, self.destination)
+        self.assertEqual((self.destination / 'SKILL.md').read_bytes(), original)
+        self.assertEqual(list(actual.iterdir()), [])
 
     def test_overlap_and_occupied_file_are_rejected_before_writing(self):
         with self.assertRaises(ValueError):
